@@ -9,15 +9,15 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-Vaccines lose potency faster as they warm up. The reaction rate behind that degradation grows exponentially with temperature (Arrhenius law, rate ∝ e^(−Ea/RT)), so heat damage adds up over time. This chip keeps a running total of that damage, like the heat-sensitive monitors on vaccine vials, and shows green, yellow or red.
+Vaccines lose potency faster as they warm up. The reaction rate behind that degradation grows exponentially with temperature (Arrhenius law: rate is proportional to exp(-Ea/RT)), so heat damage adds up over time. This chip keeps a running total of that damage, like the heat-sensitive monitors on vaccine vials, and shows green, yellow or red.
 
 **Inputs and outputs**
 
 | Pin | Function |
 |---|---|
-| `ui_in[2:0]` | temperature code (0–7) |
+| `ui_in[2:0]` | temperature code (0-7) |
 | `ui_in[4:3]` | discard limit: 128, 256, 512 or 1000 |
-| `ui_in[5]` | test mode: 1 = one step per clock, 0 = one step per minute at 1 Hz |
+| `ui_in[5]` | test mode: 1 = one step per clock, 0 = one step per 60 clocks (one minute at 1 Hz) |
 | `rst_n` | new vial: clears the total |
 | `uo_out[0]` | green (safe) |
 | `uo_out[1]` | yellow (warning) |
@@ -29,24 +29,22 @@ Vaccines lose potency faster as they warm up. The reaction rate behind that degr
 | Code | Temperature | Damage per step |
 |---|---|---|
 | 0 | below 2 °C | 0 |
-| 1 | 2–8 °C | 0 |
-| 2 | 8–15 °C | 1 |
-| 3 | 15–20 °C | 2 |
-| 4 | 20–25 °C | 4 |
-| 5 | 25–30 °C | 8 |
-| 6 | 30–37 °C | 16 |
+| 1 | 2-8 °C | 0 |
+| 2 | 8-15 °C | 1 |
+| 3 | 15-20 °C | 2 |
+| 4 | 20-25 °C | 4 |
+| 5 | 25-30 °C | 8 |
+| 6 | 30-37 °C | 16 |
 | 7 | above 37 °C | 32 |
 
 **Blocks**
 
 1. **Tick generator:** a 6-bit divide-by-60 counter (flip-flops) turns a 1 Hz clock into one step per minute. In test mode a mux bypasses it, so every clock is a step.
 2. **Accumulator:** on each step an adder adds the damage to an 11-bit register of flip-flops.
-3. **Comparators:** a mux picks the limit. One comparator flags a warning (total ≥ half the limit) and another flags discard (total ≥ the limit).
-4. **Alarm:** a flip-flop latches the discard state and stops the accumulator, so cooling the vial can't undo it. Gates then light one LED: red = latch, yellow = warning AND NOT red, green = NOT warning. The buzzer follows red.
+3. **Comparators:** a mux picks the limit. One comparator flags a warning (total >= half the limit) and another flags discard (total >= the limit).
+4. **Alarm:** a flip-flop latches the discard state, and the accumulator stops once it is set, so cooling the vial can't undo it. Gates then light one LED: red = latch, yellow = warning AND NOT red, green = NOT (warning OR red). The buzzer follows red.
 
 In total there are 18 flip-flops (11 + 6 + 1) and 3 muxes (lookup, limit, tick), plus the adder, comparators and output gates. The weights and limits are example values. Real ones come from the vaccine maker's stability data.
-
-Keep the External hardware section from before. If you use Wokwi, input 0 is the clock, so shift the `ui_in` numbers up by one in both sections.
 
 ## How to test
 
@@ -61,11 +59,11 @@ You can run the same tests in simulation or on the demo board.
 
 **Simulation**
 
-With the Verilog template, run `make -B` in the `test` folder to run the cocotb testbench. Then open `tb.vcd` with `gtkwave tb.vcd` to watch the accumulator. In Wokwi, set the switches and clock the same way.
+Run `make -B` in the `test` folder. This runs the cocotb tests in `test.py`, which check the same rows as the table below and compare every temperature code and limit with a Python model. Then open the waveform with `gtkwave tb.fst tb.gtkw` to watch the accumulator.
 
 **Expected results**
 
-| Code | Clocks | Expected |
+| Code | Clocks after reset | Expected |
 |---|---|---|
 | 001 | 20 | green only |
 | 111 | 2 | yellow |
@@ -80,11 +78,6 @@ Real-time check: set `ui_in[5]` = 0 and the clock to 1 Hz. With code 111, yellow
 
 Pass: every row matches, and reset always returns to green only.
 
-Three tips:
-- In Wokwi, you can use the first input as the clock. If you do, shift all the inputs up by one.
-- `clock_hz` in `info.yaml` holds the clock frequency in Hz, so set it to 10.
-- The board's SDK includes microcotb, a mini cocotb that runs on the demo board, so you can reuse the same checks on the real chip.
-
 ## External hardware
 
-List external hardware used in your project (e.g. PMOD, LED display, etc), if any
+Green, yellow and red LEDs (with resistors) on `uo_out[0]`, `uo_out[1]` and `uo_out[2]`, and a buzzer on `uo_out[3]`. The demo board's DIP switches supply the temperature code, and segments a to d of its 7-segment display mirror the four output pins, so you can test before wiring any LEDs. A real temperature sensor with comparators can replace the switches later.

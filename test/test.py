@@ -1,129 +1,191 @@
+# SPDX-FileCopyrightText: 2026 Cindy Gatica
+# SPDX-License-Identifier: Apache-2.0
+
+"""cocotb tests for the vaccine vial heat monitor.
+
+uo_out[3:0] = {buzzer, red, yellow, green}
+ui_in       = {x, x, test_mode, limit_sel[1:0], temp_code[2:0]}
+"""
+
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import ClockCycles
+from cocotb.triggers import ClockCycles, Timer
 
-import os
-import glob
-import itertools
-from PIL import Image, ImageChops
+# What the four output pins show in each state
+GREEN = 0b0001                   # safe
+YELLOW = 0b0010                  # warning
+RED = 0b1100                     # discard: red LED + buzzer
+
+DAMAGE = [0, 0, 1, 2, 4, 8, 16, 32]   # damage per step for each temperature code
+LIMIT = [128, 256, 512, 1000]         # discard limit for each limit_sel value
 
 
-@cocotb.test()
-async def test_project(dut):
-    cocotb.pass_test() #added
+def ui(code, limit_sel=0, test_mode=1):
+    """Build the ui_in byte."""
+    return (test_mode << 5) | (limit_sel << 3) | code
 
-    # Set clock period to 40 ns (25 MHz)
-    CLOCK_PERIOD = 40
 
-    # Set VGA timing parameters matching hvsync_generator.v
-    H_DISPLAY = 640
-    H_FRONT   =  16
-    H_SYNC    =  96
-    H_BACK    =  48
-    V_DISPLAY = 480
-    V_FRONT   =  10
-    V_SYNC    =   2
-    V_BACK    =  33
-
-    # Number of frames to capture
-    CAPTURE_FRAMES = 3
-
-    # Derived constants
-    H_SYNC_START = H_DISPLAY + H_FRONT
-    H_SYNC_END = H_SYNC_START + H_SYNC
-    H_TOTAL = H_SYNC_END + H_BACK
-    V_SYNC_START = V_DISPLAY + V_FRONT
-    V_SYNC_END = V_SYNC_START + V_SYNC
-    V_TOTAL = V_SYNC_END + V_BACK
-
-    # Palette mapping uo_out values to RGB color
-    # uo_out = {hsync, B[0], G[0], R[0], vsync, B[1], G[1], R[1]}
-    palette = [bytes(3)] * 256
-    for r1, r0, g1, g0, b1, b0 in itertools.product(range(2), repeat=6):
-        red = 170*r1 + 85*r0
-        green = 170*g1 + 85*g0
-        blue = 170*b1 + 85*b0
-        color_index = b0<<6|g0<<5|r0<<4|b1<<2|g1<<1|r1<<0
-        for sync_bits in (0x00, 0x08, 0x80, 0x88):
-            palette[color_index | sync_bits] = bytes((red, green, blue))
-
-    # Set up the clock
-    clock = Clock(dut.clk, CLOCK_PERIOD, unit="ns")
-    cocotb.start_soon(clock.start())
-
-    # Reset the design
+async def init(dut):
+    """Start the 10 MHz simulation clock (once per test)."""
+    cocotb.start_soon(Clock(dut.clk, 100, unit="ns").start())
     dut.ena.value = 1
-    dut.ui_in.value = 0
     dut.uio_in.value = 0
+
+
+async def reset(dut, ui_value):
+    """Reset the design (a new vial) with ui_in = ui_value."""
+    dut.ui_in.value = ui_value
     dut.rst_n.value = 0
-    await ClockCycles(dut.clk, 10)
+    await ClockCycles(dut.clk, 3)
     dut.rst_n.value = 1
-    await ClockCycles(dut.clk, 2)
 
-    # Define some functions for capturing lines & frames
 
-    async def check_line(expected_vsync):
-        for i in range(H_TOTAL):
-            hsync = int(dut.uo_out.value[7])
-            vsync = int(dut.uo_out.value[3])
-            assert hsync == (0 if H_SYNC_START <= i < H_SYNC_END else 1), "Unexpected hsync pattern"
-            assert vsync == expected_vsync, "Unexpected vsync pattern"
-            await ClockCycles(dut.clk, 1)
+async def start(dut, ui_value):
+    await init(dut)
+    await reset(dut, ui_value)
 
-    async def capture_line(framebuffer, offset):
-        for i in range(H_TOTAL):
-            hsync = int(dut.uo_out.value[7])
-            vsync = int(dut.uo_out.value[3])
-            assert hsync == (0 if H_SYNC_START <= i < H_SYNC_END else 1), "Unexpected hsync pattern"
-            assert vsync == 1, "Unexpected vsync pattern"
-            if i < H_DISPLAY:
-                framebuffer[offset+3*i:offset+3*i+3] = palette[int(dut.uo_out.value)]
-            await ClockCycles(dut.clk, 1)
 
-    async def skip_frame(frame_num):
-        dut._log.info(f"Skipping frame {frame_num}")
-        await ClockCycles(dut.clk, H_TOTAL*V_TOTAL)
+async def clocks(dut, n):
+    """Wait n clock cycles, then let the flip-flops settle."""
+    await ClockCycles(dut.clk, n)
+    await Timer(1, unit="ns")
 
-    async def capture_frame(frame_num, check_sync=True):
-        framebuffer = bytearray(V_DISPLAY*H_DISPLAY*3)
-        for j in range(V_DISPLAY):
-            dut._log.info(f"Frame {frame_num}, line {j} (display)")
-            line = await capture_line(framebuffer, 3*j*H_DISPLAY)
-        if check_sync:
-            for j in range(j, j+V_FRONT):
-                dut._log.info(f"Frame {frame_num}, line {j} (front porch)")
-                await check_line(1)
-            for j in range(j, j+V_SYNC):
-                dut._log.info(f"Frame {frame_num}, line {j} (sync pulse)")
-                await check_line(0)
-            for j in range(j, j+V_BACK):
-                dut._log.info(f"Frame {frame_num}, line {j} (back porch)")
-                await check_line(1)
-        else:
-            dut._log.info(f"Frame {frame_num}, skipping non-display lines")
-            await ClockCycles(dut.clk, H_TOTAL*(V_TOTAL-V_DISPLAY))
-        frame = Image.frombytes('RGB', (H_DISPLAY, V_DISPLAY), bytes(framebuffer))
-        return frame
 
-    # Start capturing
-
-    os.makedirs("output", exist_ok=True)
-
-    for i in range(CAPTURE_FRAMES):
-        frame = await capture_frame(i)
-        frame.save(f"output/frame{i}.png")
+def leds(dut):
+    return int(dut.uo_out.value) & 0x0F
 
 
 @cocotb.test()
-async def compare_reference(dut):
-    cocotb.pass_test() #added
+async def test_cold_vial_stays_green(dut):
+    await start(dut, ui(0b001))           # 2-8 C: no damage
+    await clocks(dut, 20)
+    assert leds(dut) == GREEN
+    dut.ui_in.value = ui(0b000)           # below 2 C: no damage either
+    await clocks(dut, 50)
+    assert leds(dut) == GREEN
 
-    for img in glob.glob("output/frame*.png"):
-        basename = img.removeprefix("output/")
-        dut._log.info(f"Comparing {basename} to reference image")
-        frame = Image.open(img)
-        ref = Image.open(f"reference/{basename}")
-        diff = ImageChops.difference(frame, ref)
-        if diff.getbbox() is not None:
-            diff.save(f"output/diff_{basename}")
-            assert False, f"Rendered {basename} differs from reference image"
+
+@cocotb.test()
+async def test_hot_vial_code_111(dut):
+    await start(dut, ui(0b111))           # above 37 C: 32 per step, limit 128
+    await clocks(dut, 1)
+    assert leds(dut) == GREEN             # total 32
+    await clocks(dut, 1)
+    assert leds(dut) == YELLOW            # total 64 = half of the limit
+    await clocks(dut, 1)
+    assert leds(dut) == YELLOW            # total 96
+    await clocks(dut, 1)
+    assert leds(dut) == RED               # total 128 = limit
+
+
+@cocotb.test()
+async def test_other_codes(dut):
+    # (code, clocks to yellow, clocks to red) with limit 128
+    await init(dut)
+    for code, to_yellow, to_red in [(0b101, 8, 16), (0b100, 16, 32)]:
+        await reset(dut, ui(code))
+        await clocks(dut, to_yellow - 1)
+        assert leds(dut) == GREEN
+        await clocks(dut, 1)
+        assert leds(dut) == YELLOW
+        await clocks(dut, to_red - to_yellow - 1)
+        assert leds(dut) == YELLOW
+        await clocks(dut, 1)
+        assert leds(dut) == RED
+
+
+@cocotb.test()
+async def test_red_is_latched(dut):
+    await start(dut, ui(0b111))
+    await clocks(dut, 4)
+    assert leds(dut) == RED
+    dut.ui_in.value = ui(0b001)           # cool the vial down
+    await clocks(dut, 10)
+    assert leds(dut) == RED               # still red
+    dut.ui_in.value = ui(0b001, limit_sel=3)  # even with a higher limit
+    await clocks(dut, 10)
+    assert leds(dut) == RED
+
+
+@cocotb.test()
+async def test_damage_is_remembered(dut):
+    await start(dut, ui(0b111))
+    await clocks(dut, 3)
+    assert leds(dut) == YELLOW            # total 96
+    dut.ui_in.value = ui(0b000)           # now cold: total must not change
+    await clocks(dut, 50)
+    assert leds(dut) == YELLOW
+    dut.ui_in.value = ui(0b111)           # hot again: 96 + 32 = 128
+    await clocks(dut, 1)
+    assert leds(dut) == RED
+
+
+@cocotb.test()
+async def test_limit_select(dut):
+    # limit 256 (01): yellow after 4 clocks, red after 8
+    await start(dut, ui(0b111, limit_sel=1))
+    await clocks(dut, 3)
+    assert leds(dut) == GREEN
+    await clocks(dut, 1)
+    assert leds(dut) == YELLOW
+    await clocks(dut, 3)
+    assert leds(dut) == YELLOW
+    await clocks(dut, 1)
+    assert leds(dut) == RED
+
+
+@cocotb.test()
+async def test_reset_is_a_new_vial(dut):
+    await start(dut, ui(0b111))
+    await clocks(dut, 4)
+    assert leds(dut) == RED
+    dut.rst_n.value = 0
+    await clocks(dut, 3)
+    dut.rst_n.value = 1
+    await Timer(1, unit="ns")
+    assert leds(dut) == GREEN
+    await clocks(dut, 2)
+    assert leds(dut) == YELLOW            # counting again from zero
+
+
+@cocotb.test()
+async def test_real_time_one_step_per_60_clocks(dut):
+    await start(dut, ui(0b111, test_mode=0))
+    await clocks(dut, 119)
+    assert leds(dut) == GREEN             # only 1 step so far (total 32)
+    await clocks(dut, 1)
+    assert leds(dut) == YELLOW            # step 2 at clock 120
+    await clocks(dut, 119)
+    assert leds(dut) == YELLOW            # clock 239
+    await clocks(dut, 1)
+    assert leds(dut) == RED               # step 4 at clock 240
+
+
+@cocotb.test()
+async def test_against_reference_model(dut):
+    """Every temperature code and every limit, compared clock by clock
+    with a small Python model of the same algorithm."""
+    await init(dut)
+    for code in range(8):
+        for sel in range(4):
+            await reset(dut, ui(code, limit_sel=sel))
+            limit = LIMIT[sel]
+            acc, latch = 0, False
+            n = limit // DAMAGE[code] + 3 if DAMAGE[code] else 30
+            for _ in range(n):
+                over = acc >= limit
+                red = latch or over
+                latch = latch or over
+                if not red:
+                    acc += DAMAGE[code]
+                over = acc >= limit
+                red = latch or over
+                alert = (acc >= limit // 2) or red
+                expected = (int(not alert)
+                            | int(alert and not red) << 1
+                            | int(red) << 2
+                            | int(red) << 3)
+                await clocks(dut, 1)
+                assert leds(dut) == expected, (
+                    f"code {code}, limit {limit}: total {acc}, "
+                    f"expected {expected:04b}, got {leds(dut):04b}")

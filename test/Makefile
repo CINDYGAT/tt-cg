@@ -5,7 +5,10 @@
 SIM ?= icarus
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = project.v hvsync_generator.v
+PROJECT_SOURCES = project.v
+
+# Write the waveform as a real FST file (open it with: gtkwave tb.fst tb.gtkw)
+PLUSARGS += -fst
 
 ifneq ($(GATES),yes)
 
