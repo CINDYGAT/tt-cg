@@ -9,10 +9,6 @@ You can also include images in this folder and reference them in the markdown. E
 
 ## How it works
 
-Here's the final "How it works". It replaces the earlier version, and its pin names match the test section.
-
-## How it works
-
 Vaccines lose potency faster as they warm up. The reaction rate behind that degradation grows exponentially with temperature (Arrhenius law, rate ∝ e^(−Ea/RT)), so heat damage adds up over time. This chip keeps a running total of that damage, like the heat-sensitive monitors on vaccine vials, and shows green, yellow or red.
 
 **Inputs and outputs**
@@ -51,12 +47,6 @@ Vaccines lose potency faster as they warm up. The reaction rate behind that degr
 In total there are 18 flip-flops (11 + 6 + 1) and 3 muxes (lookup, limit, tick), plus the adder, comparators and output gates. The weights and limits are example values. Real ones come from the vaccine maker's stability data.
 
 Keep the External hardware section from before. If you use Wokwi, input 0 is the clock, so shift the `ui_in` numbers up by one in both sections.
-
-## How to test
-
-I'll check how Tiny Tapeout runs tests so the steps you add to `info.md` match it.
-
-Here's a fuller "How to test" for `info.md`. It replaces the earlier one and adds how to run it on the demo board and in simulation.
 
 ## How to test
 
